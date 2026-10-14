@@ -1,49 +1,61 @@
-# Real-Time Crypto Arbitrage Streaming Pipeline 
+# Real-Time BTC/ETH Ratio Streaming Pipeline
 
-An end-to-end, multi-stream Data Engineering pipeline that ingests, buffers, joins, and visualizes high-velocity cryptocurrency trades in real-time. This system consumes multiplexed WebSocket feeds from Binance, buffers the data via Apache Kafka, performs complex Stream-to-Stream joins using PySpark, sinks to a Parquet Data Lake, and serves insights via a live Streamlit dashboard.
+An end-to-end streaming data pipeline that ingests live Binance trades for BTC/USDT and ETH/USDT, buffers them in Kafka, aggregates them per second with PySpark Structured Streaming, stores the result as Parquet, and serves a live Streamlit dashboard.
 
-##  Architecture
+## Architecture
 
-1. **Ingestion Layer (Python):** A WebSocket client connects to the Binance multiplex API, simultaneously extracting live BTC/USDT and ETH/USDT trade events and routing them to dedicated Kafka topics.
-2. **Message Broker (Kafka):** Confluent Apache Kafka (running in Docker via KRaft) buffers the raw JSON streams, ensuring fault tolerance and zero data loss during high-volume market spikes.
-3. **Processing Layer (PySpark):** PySpark Structured Streaming consumes both Kafka topics. It applies a 1-minute event-time watermark to handle late-arriving data and executes a **Stream-to-Stream Join** with an equality predicate to match BTC and ETH trades occurring within a 10-second window, calculating the real-time price ratio.
-4. **Storage Sink (Parquet Data Lake):** Processed micro-batches are appended to a local Data Lake in columnar `.parquet` format for efficient downstream querying.
-5. **Serving Layer (Streamlit):** A live web dashboard continuously polls the Data Lake, rendering the latest prices, ratios, and moving trend lines in real-time.
+```text
+Binance WebSocket -> Python producer -> Kafka (btc_trades, eth_trades)
+    -> PySpark Structured Streaming (1-second event-time windows)
+    -> Parquet files -> Streamlit dashboard
+```
 
-## Tech Stack
-* **Languages:** Python 3, SQL
-* **Streaming & Processing:** Apache Kafka, PySpark (Structured Streaming)
-* **Visualization:** Streamlit, Pandas
-* **Infrastructure:** Docker, Docker Compose, Windows Batch Automation
-* **Storage:** Parquet, Local File System
+1. **Ingestion (Python):** A WebSocket client reads Binance's combined stream and publishes each trade to a dedicated Kafka topic (`btc_trades` or `eth_trades`).
+2. **Message broker (Kafka, KRaft, Docker):** Decouples ingestion from processing. Messages are retained on the broker, so Spark can restart and resume from its checkpoint.
+3. **Processing (PySpark):** Reads both topics, parses and validates the JSON (malformed records are dropped), converts the trade timestamp to event time, and applies a 10-second watermark. A single 1-second tumbling-window aggregation computes the average BTC and ETH price per second and the BTC/ETH ratio. Only seconds where both symbols traded are kept.
+4. **Storage (Parquet):** Micro-batches (every 10 seconds) are appended to a local Parquet data lake. Spark checkpointing tracks offsets and state.
+5. **Serving (Streamlit):** The dashboard reads the latest rows and refreshes every 2 seconds.
 
-## Project Structure
+## Design decisions
+
+- **Windowed aggregation instead of a stream-to-stream join.** The first version joined raw BTC and ETH trades within +/-10 seconds on a constant key. That matched every BTC trade with every ETH trade in the window, producing far more rows than either input. Aggregating to one row per second per symbol gives a clean one-row-per-second result.
+- **Event time, not arrival time.** The producer forwards Binance's event timestamp, and Spark windows on it, so late or out-of-order trades land in the right window.
+- **Millisecond precision.** Timestamps are derived by dividing epoch milliseconds by 1000 and casting, instead of `from_unixtime`, which truncates to seconds.
+
+## Limitations
+
+- Single-node Kafka with replication factor 1, and Spark in `local[*]` mode: a demo setup, not fault tolerant.
+- The producer has no reconnect logic and uses default delivery settings (at-least-once at best).
+- A 10-second trigger creates many small Parquet files, and the dashboard re-reads the directory on each refresh. A table format such as Delta Lake or periodic compaction would fix this.
+- No automated tests or monitoring (for example consumer lag).
+
+## Tech stack
+
+Python 3, Apache Kafka, PySpark (Structured Streaming), Parquet, Streamlit, Pandas, Docker / Docker Compose, Windows batch scripts.
+
+## Project structure
+
 ```text
 crypto-streaming-pipeline/
 ├── src/
-│   ├── producer.py           # Multi-stream Binance WebSocket -> Kafka
-│   └── spark_processor.py    # PySpark stream-to-stream join & Parquet sink
+│   ├── producer.py           # Binance WebSocket -> Kafka
+│   └── spark_processor.py    # Windowed aggregation & Parquet sink
 ├── data/
-│   ├── checkpoints_ratio/    # Spark streaming state management
-│   └── output/               # Parquet Data Lake (crypto_ratio/)
-├── docker-compose.yml        # Infrastructure setup (Kafka broker & Spark cluster)
-├── dashboard.py              # Real-time Streamlit visualization app
-├── requirements.txt          # Python dependencies
-├── run_pipeline.bat          # 1-click startup automation script
-└── stop_pipeline.bat         # Teardown and cleanup script
+│   ├── checkpoints_ratio/    # Spark streaming state
+│   └── output/               # Parquet data lake (crypto_ratio/)
+├── docker-compose.yml        # Kafka broker and Spark container
+├── dashboard.py              # Streamlit app
+├── requirements.txt
+├── run_pipeline.bat          # One-click startup
+└── stop_pipeline.bat         # Teardown
 ```
 
-## How to Run the Pipeline
+## How to run
 
-### Prerequisites
-* Docker Desktop installed and running
-* Python 3.8+ installed
-* Install required Python libraries: `pip install -r requirements.txt`
+**Prerequisites:** Docker Desktop, Python 3.8+, `pip install -r requirements.txt`.
 
-### 1-Click Deployment
-This project includes Windows Batch scripts to automate the infrastructure orchestration and script execution.
+1. Double-click `run_pipeline.bat`. It starts the Kafka and Spark containers, then launches the producer, the Spark job, and the dashboard.
+2. Open `http://localhost:8501`. The first rows appear roughly 15-25 seconds after startup (10-second watermark plus the 10-second trigger).
+3. Double-click `stop_pipeline.bat` to shut everything down.
 
-1. **Start the Pipeline:** Double-click `run_pipeline.bat`. 
-   * This automatically spins up the Kafka and Spark Docker containers, waits for initialization, and launches the Producer, Spark Processor, and Streamlit Dashboard in dedicated terminal windows.
-2. **View the Dashboard:** A browser window will automatically open to `http://localhost:8501` to display the live charts.
-3. **Stop the Pipeline:** Double-click `stop_pipeline.bat` to spin down the Docker containers and terminate all background processes.
+> If you change the Spark query, delete `data/checkpoints_ratio/` and `data/output/crypto_ratio/` before restarting, because an old checkpoint is incompatible with a changed query.

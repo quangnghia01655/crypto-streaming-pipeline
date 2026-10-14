@@ -1,0 +1,4 @@
+v1
+{"path":"file:///app/data/output/crypto_ratio/part-00000-b7c28cc3-d589-43a8-b3bb-9917b4f99f5d-c000.snappy.parquet","size":1877,"isDir":false,"modificationTime":1791964426266,"blockReplication":1,"blockSize":33554432,"action":"add"}
+{"path":"file:///app/data/output/crypto_ratio/part-00001-0e873550-3ec6-4fda-be29-65be87cef191-c000.snappy.parquet","size":1852,"isDir":false,"modificationTime":1791964426181,"blockReplication":1,"blockSize":33554432,"action":"add"}
+{"path":"file:///app/data/output/crypto_ratio/part-00002-b5db0741-237b-478a-b78c-6be976e87ef3-c000.snappy.parquet","size":1929,"isDir":false,"modificationTime":1791964426280,"blockReplication":1,"blockSize":33554432,"action":"add"}
